@@ -1,0 +1,1026 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "systolics Partner-API",
+    "version": "0.3.0",
+    "description": "Stand 2026-10-30. Version 1 der Partner-API für Service-Manager: Coder-Worklist lesen und\nRückmeldungen geben.\n\nDie Partner-API macht einzelne, benannte Funktionen der systolics-Plattform für Backends\nvon Partnern integrierbar, mit denen systolics einen Vertrag hat (Service-Manager). Sie\nläuft auf einem eigenen Host, kennt nur die hier beschriebenen Routen und wird\nausschließlich Maschine-zu-Maschine genutzt.\n\n**Authentifizierung.** Der Partner verwendet einen Integration-Schlüssel, den er im\nPartner-Portal anlegt (Präfix `bps-`). Partner-Schlüssel (Präfix `bp-`) gelten hier nicht,\nIntegration-Schlüssel umgekehrt nicht in der systolics-API. Mit `GET /auth/services/token`\ntauscht er ihn auf diesem Host gegen einen Token mit 15 Minuten Laufzeit. Alle weiteren Routen verlangen diesen Token\nals `Authorization: Bearer …`. Der Token gilt nur für die Partner-API. Nach Ablauf wird ein\nneuer Token geholt; es gibt keine Refresh-Tokens.\n\n**Freigaben.** systolics schaltet je Partner fest, welche Routen er nutzen darf und welche\nPraxen er verwaltet. Die Praxis einer Anfrage ist der Pfadparameter `orgId`, wie in der\nsystolics-API. Ist die Route nicht freigeschaltet oder die Praxis nicht dem Partner\nzugeordnet, antwortet die API mit 403. Eine zurückgenommene Routen-Freigabe, ein im\nPartner-Portal entwerteter API-Key und eine geänderte Zuordnung von Praxen wirken nach\nspätestens 5 Minuten.\n\n**Vertrag.** Alle Felder tragen die internen Namen der Plattform. Innerhalb dieser Version\nkommen höchstens Felder hinzu; Entfernen oder Umbenennen bedeutet eine neue Version im\nPfad. Die Felder `title`, `description` und `reasoning` sind Anzeigetexte, deren Wortlaut\nnicht Teil des Vertrags ist. Statuswerte sind die internen Werte.\n\n**Fehler.** Fehlerantworten haben die Form `{ key, reqId, msg }`; `reqId` steht auch im\nHeader `X-Request-Id`. Feste Schlüssel:\n\n| Status | key | Bedeutung |\n|---|---|---|\n| 400 | `PARTNER_QUERY_INVALID` | Ungültiger Parameter oder Request-Body |\n| 400 | `PARTNER_ORG_INVALID` | `orgId` ist keine gültige Id |\n| 401 | `PARTNER_TOKEN_INVALID` | Token fehlt, ist ungültig oder abgelaufen, oder der API-Key wurde entwertet |\n| 403 | `PARTNER_APIKEY_INVALID` | API-Key unbekannt, entwertet, kein Integration-Schlüssel oder nicht für die Partner-API freigeschaltet |\n| 403 | `PARTNER_ROUTE_NOT_ENABLED` | Route für den Partner nicht freigeschaltet |\n| 403 | `PARTNER_ORG_NOT_MANAGED` | Praxis ist dem Partner nicht zugeordnet |\n| 404 | `NOT_FOUND` | Unbekannte Route |\n| 404 | `GENERAL_ERROR` | Action Handle nicht gefunden |\n| 409 | `CODER_QUERY_FEEDBACK_CONFLICT` | Revision fehlt oder ist veraltet, oder die Quelle ist inaktiv |\n| 500 | `GENERAL_ERROR` | Unerwarteter Fehler |\n"
+  },
+  "servers": [
+    {
+      "url": "https://partner.services.systolics.de/api/v01",
+      "description": "Partner-API"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Authentifizierung",
+      "description": "API-Key gegen kurzlebigen Token tauschen"
+    },
+    {
+      "name": "Coder - Worklist",
+      "description": "Arbeitsliste der Coder-Anwendung lesen und Rückmeldungen geben"
+    }
+  ],
+  "paths": {
+    "/auth/services/token": {
+      "get": {
+        "tags": [
+          "Authentifizierung"
+        ],
+        "summary": "Token aus API-Key beziehen",
+        "operationId": "getServiceToken",
+        "description": "Tauscht einen Integration-Schlüssel des Partners (Partner-Portal, Präfix `bps-`) gegen\neinen Token mit 15 Minuten Laufzeit. Der Token identifiziert den Partner; was er darf,\nprüft die API bei jeder Anfrage anhand der Freigaben des Partners.\n",
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Token ausgestellt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "API-Key fehlt, ist ungültig, entwertet oder nicht für die Partner-API freigeschaltet",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "key": "PARTNER_APIKEY_INVALID",
+                  "reqId": "4a900ef0-dfbe-11ef-add6-bf069a8357f6",
+                  "msg": "The API key is invalid or not enabled for the partner API."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/optimizer/{orgId}/coder/worklist": {
+      "get": {
+        "tags": [
+          "Coder - Worklist"
+        ],
+        "summary": "Worklist der Praxis abrufen",
+        "operationId": "getCoderWorklist",
+        "description": "Liefert die Arbeitsliste der Praxis `orgId`, gruppiert Patient →\nAnalysis Object → Action Handle. Paginiert wird über Patienten: `limit` und `skip`\nzählen Patienten, `hasMore` zeigt an, ob weitere Patienten folgen. Mit\n`patientNumberPVS` kommt genau dieser Patient mit allen seinen Handles.\n\nDefault-Filter: alle Status außer `deactivated`. Handles ohne Analysis Object (z. B.\naus Coder Queries) erscheinen in einer Gruppe mit `ident: null`.\n",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/PracticeOrgId"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Kommagetrennt. Werte `pending`, `approved`, `rejected`, `deactivated`, `untouched`. Default alle außer `deactivated`.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "pending,untouched"
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "Kommagetrennt. Werte `add`, `remove`, `adjust`, `review`, `workflow` (Coder-Query-Handles).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "description": "Kommagetrennt. Werte `info`, `warning`, `alert`.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "goType",
+            "in": "query",
+            "description": "Abrechnungssystem.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "EBM",
+                "GOAE"
+              ]
+            }
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "description": "FindingType-Literal, siehe Facetten.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gop",
+            "in": "query",
+            "description": "Ziffer, siehe Facetten.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dateFrom",
+            "in": "query",
+            "description": "Fachdatum ab (einschließlich), `YYYY-MM-DD`.",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "dateTo",
+            "in": "query",
+            "description": "Fachdatum bis (einschließlich), `YYYY-MM-DD`.",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "updatedFrom",
+            "in": "query",
+            "description": "Nur Handles, deren letzte Berührung ab diesem Zeitpunkt liegt (ISO 8601). Für den inkrementellen Abgleich.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "patientNumberPVS",
+            "in": "query",
+            "description": "Exakte Patientennummer des Praxisverwaltungssystems.",
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "sortBy",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "geldwert",
+                "scheinwert",
+                "pending",
+                "total",
+                "lastModified",
+                "patientNumber"
+              ],
+              "default": "geldwert"
+            }
+          },
+          {
+            "name": "sortOrder",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "default": "desc"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Anzahl Patienten je Seite. Höhere Werte als 100 werden auf 100 gedeckelt.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "skip",
+            "in": "query",
+            "description": "Anzahl zu überspringender Patienten.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Worklist-Seite",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorklistResponse"
+                },
+                "example": {
+                  "key": "success",
+                  "data": {
+                    "hasMore": true,
+                    "patients": [
+                      {
+                        "patientNumber": "a9f3c1d2e4b7…",
+                        "patientNumberPVS": "12345",
+                        "birthDate": "1961-04-02",
+                        "analysisObjects": [
+                          {
+                            "ident": 7,
+                            "goType": "EBM",
+                            "title": "Hausärztliche Versorgung Q3/2026, chronische Erkrankung",
+                            "repDate": "32026",
+                            "startDate": null,
+                            "endDate": null,
+                            "actionHandles": [
+                              {
+                                "ident": 4711,
+                                "contentRevision": null,
+                                "kind": "add",
+                                "status": "pending",
+                                "severity": "warning",
+                                "category": "BILLABLE_OMISSION",
+                                "categoryLabel": "Fehlende Ziffer",
+                                "title": "GOP 03220 übernehmen?",
+                                "description": "Am 14.10.2026 ist eine Chronikerbetreuung dokumentiert, die Ziffer 03220 fehlt im Schein.",
+                                "reasoning": "Diagnose E11.9 gesichert, zwei Arzt-Patienten-Kontakte im Quartal.",
+                                "date": "2026-10-14",
+                                "goType": "EBM",
+                                "gop": "03220",
+                                "monetaryValue": 14.21,
+                                "userEdit": null
+                              },
+                              {
+                                "ident": 4698,
+                                "contentRevision": null,
+                                "kind": "add",
+                                "status": "approved",
+                                "severity": "warning",
+                                "category": "BILLABLE_OMISSION",
+                                "categoryLabel": "Fehlende Ziffer",
+                                "title": "GOP 01732 übernehmen?",
+                                "description": "Gesundheitsuntersuchung am 23.09.2026 dokumentiert, Ziffer fehlt.",
+                                "reasoning": null,
+                                "date": "2026-09-23",
+                                "goType": "EBM",
+                                "gop": "01732",
+                                "monetaryValue": 36.42,
+                                "userEdit": {
+                                  "status": "approved",
+                                  "comment": "Nachgetragen.",
+                                  "dateCreated": "2026-10-20T09:12:00.000Z"
+                                }
+                              }
+                            ]
+                          },
+                          {
+                            "ident": null,
+                            "goType": "GOAE",
+                            "title": null,
+                            "repDate": null,
+                            "startDate": null,
+                            "endDate": null,
+                            "actionHandles": [
+                              {
+                                "ident": 4802,
+                                "contentRevision": 3,
+                                "kind": "remove",
+                                "status": "pending",
+                                "severity": "warning",
+                                "category": "DUPLICATE_BILLING",
+                                "categoryLabel": "Doppelabrechnung",
+                                "title": "Ziffer 75 doppelt am 12.09.2026",
+                                "description": "Die Ziffer 75 ist am selben Tag zweimal angesetzt.",
+                                "reasoning": null,
+                                "date": "2026-09-12",
+                                "goType": "GOAE",
+                                "gop": "75",
+                                "monetaryValue": 17.49,
+                                "userEdit": null
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/optimizer/{orgId}/coder/worklist/facets": {
+      "get": {
+        "tags": [
+          "Coder - Worklist"
+        ],
+        "summary": "Filterwerte der Worklist abrufen",
+        "operationId": "getCoderWorklistFacets",
+        "description": "Liefert die in der Praxis vorkommenden Werte für `goType`, `category` und `gop` zur\nBefüllung einer Filterleiste. Die Werte sind filterunabhängig und bis zu zwei Minuten\nzwischengespeichert. `kind`, `severity` und `status` sind feste Wertemengen und werden\nnicht als Facetten geliefert.\n",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/PracticeOrgId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Facetten",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FacetsResponse"
+                },
+                "example": {
+                  "key": "success",
+                  "data": {
+                    "goTypes": [
+                      "EBM",
+                      "GOAE"
+                    ],
+                    "categories": [
+                      {
+                        "value": "BILLABLE_OMISSION",
+                        "label": "Fehlende Ziffer"
+                      },
+                      {
+                        "value": "DOCUMENTATION_SUPPORT_ISSUE",
+                        "label": "Dokumentationslücke"
+                      }
+                    ],
+                    "gops": [
+                      "01732",
+                      "03220",
+                      "03230"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/optimizer/{orgId}/coder/patient/{patientNumber}/actionHandles/{actionHandleId}": {
+      "put": {
+        "tags": [
+          "Coder - Worklist"
+        ],
+        "summary": "Rückmeldung zu einem Action Handle geben",
+        "operationId": "putCoderActionHandleFeedback",
+        "description": "Setzt den Status eines Action Handles auf `approved`, `rejected` oder `pending` und\nhinterlegt optional einen Kommentar. Jede Rückmeldung wird in der Historie der Praxis\ngespeichert und dem Partner zugeordnet.\n\nTrägt das Handle in der Worklist eine `contentRevision`, ist `expectedRevision` mit\ngenau diesem Wert Pflicht. Fehlt sie oder ist sie veraltet, weil das Handle inzwischen\nneu erzeugt wurde: 409 mit `key: CODER_QUERY_FEEDBACK_CONFLICT`; der Partner lädt den\nPatienten über die Worklist neu. Ein Handle aus einer inzwischen inaktiven Quelle kann\nnicht auf `pending` zurückgesetzt werden (ebenfalls 409).\n",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/PracticeOrgId"
+          },
+          {
+            "name": "patientNumber",
+            "in": "path",
+            "required": true,
+            "description": "Hash der Patientennummer, wie in der Worklist unter `patientNumber` geliefert.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actionHandleId",
+            "in": "path",
+            "required": true,
+            "description": "`ident` des Action Handles aus der Worklist.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackRequest"
+              },
+              "example": {
+                "status": "approved",
+                "comment": "Nachgetragen.",
+                "expectedRevision": 3
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Rückmeldung gespeichert",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackResponse"
+                },
+                "example": {
+                  "key": "success",
+                  "data": {
+                    "ident": 4802,
+                    "status": "approved",
+                    "contentRevision": 4
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "Action Handle nicht gefunden (falscher `actionHandleId` oder `patientNumber`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Revision fehlt oder ist veraltet, oder die Quelle ist inaktiv",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "key": "CODER_QUERY_FEEDBACK_CONFLICT",
+                  "reqId": "4a900ef0-dfbe-11ef-add6-bf069a8357f6",
+                  "msg": "The Coder Query handle changed. Reload it and submit its current expectedRevision."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "apiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-systolics-apikey",
+        "description": "Integration-Schlüssel des Partners (Partner-Portal, Präfix `bps-`). Nur für `GET /auth/services/token`."
+      },
+      "serviceToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Token aus `GET /auth/services/token`, 15 Minuten gültig, nur auf der Partner-API verwendbar."
+      }
+    },
+    "parameters": {
+      "PracticeOrgId": {
+        "name": "orgId",
+        "in": "path",
+        "required": true,
+        "description": "Id der Praxis (Organisation), auf die sich die Anfrage bezieht. Die Praxis muss dem Partner zugeordnet sein.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{24}$"
+        },
+        "example": "61aa799f55810d03cb20f62b"
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Ungültiger Parameter oder Body (`PARTNER_QUERY_INVALID`), oder `orgId` ist keine gültige Id (`PARTNER_ORG_INVALID`)",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "key": "PARTNER_QUERY_INVALID",
+              "reqId": "4a900ef0-dfbe-11ef-add6-bf069a8357f6",
+              "msg": "sortBy must be one of geldwert, scheinwert, pending, total, lastModified, patientNumber."
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Token fehlt, ist ungültig oder abgelaufen, oder der API-Key wurde entwertet (`PARTNER_TOKEN_INVALID`)",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "key": "PARTNER_TOKEN_INVALID",
+              "reqId": "4a900ef0-dfbe-11ef-add6-bf069a8357f6",
+              "msg": "The token is missing, invalid or expired."
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Route für den Partner nicht freigeschaltet (`PARTNER_ROUTE_NOT_ENABLED`), oder Praxis dem Partner nicht zugeordnet (`PARTNER_ORG_NOT_MANAGED`)",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "key": "PARTNER_ORG_NOT_MANAGED",
+              "reqId": "4a900ef0-dfbe-11ef-add6-bf069a8357f6",
+              "msg": "The organization is not managed by this business partner."
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "TokenResponse": {
+        "type": "object",
+        "required": [
+          "key",
+          "data"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "SUCCESS"
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "token"
+            ],
+            "properties": {
+              "token": {
+                "type": "string",
+                "description": "Token (JWT) der Partner-API, 15 Minuten gültig",
+                "example": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9…"
+              }
+            }
+          }
+        }
+      },
+      "WorklistResponse": {
+        "type": "object",
+        "required": [
+          "key",
+          "data"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "success"
+          },
+          "data": {
+            "$ref": "#/components/schemas/Worklist"
+          }
+        }
+      },
+      "Worklist": {
+        "type": "object",
+        "required": [
+          "patients",
+          "hasMore"
+        ],
+        "properties": {
+          "patients": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorklistPatient"
+            }
+          },
+          "hasMore": {
+            "type": "boolean",
+            "description": "Es folgen weitere Patienten; nächste Seite mit `skip = skip + limit`."
+          }
+        }
+      },
+      "WorklistPatient": {
+        "type": "object",
+        "required": [
+          "patientNumber",
+          "patientNumberPVS",
+          "birthDate",
+          "analysisObjects"
+        ],
+        "properties": {
+          "patientNumber": {
+            "type": "string",
+            "description": "Hash der Patientennummer. Schlüssel für den Rückmelde-Pfad; nicht lesbar."
+          },
+          "patientNumberPVS": {
+            "type": "string",
+            "nullable": true,
+            "description": "Patientennummer des Praxisverwaltungssystems. Kann fehlen, wenn der Patient noch nicht vollständig übertragen wurde."
+          },
+          "birthDate": {
+            "type": "string",
+            "format": "date",
+            "nullable": true
+          },
+          "analysisObjects": {
+            "type": "array",
+            "description": "Fälle bzw. Scheine des Patienten, in Sortierreihenfolge.",
+            "items": {
+              "$ref": "#/components/schemas/WorklistAnalysisObject"
+            }
+          }
+        }
+      },
+      "WorklistAnalysisObject": {
+        "type": "object",
+        "required": [
+          "ident",
+          "goType",
+          "title",
+          "repDate",
+          "startDate",
+          "endDate",
+          "actionHandles"
+        ],
+        "properties": {
+          "ident": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Schlüssel des Analysis Objects. `null` für Handles ohne Analysis Object."
+          },
+          "goType": {
+            "type": "string",
+            "nullable": true,
+            "description": "Abrechnungssystem, `EBM` oder `GOAE`."
+          },
+          "title": {
+            "type": "string",
+            "nullable": true,
+            "description": "Einzeilige Fallbezeichnung (Anzeigetext)."
+          },
+          "repDate": {
+            "type": "string",
+            "nullable": true,
+            "description": "Quartal im Format QJJJJ, nur EBM.",
+            "example": "32026"
+          },
+          "startDate": {
+            "type": "string",
+            "format": "date",
+            "nullable": true,
+            "description": "Beginn des Abrechnungszeitraums, nur GOÄ."
+          },
+          "endDate": {
+            "type": "string",
+            "format": "date",
+            "nullable": true,
+            "description": "Ende des Abrechnungszeitraums, nur GOÄ."
+          },
+          "actionHandles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ActionHandle"
+            }
+          }
+        }
+      },
+      "ActionHandle": {
+        "type": "object",
+        "required": [
+          "ident",
+          "contentRevision",
+          "kind",
+          "status",
+          "severity",
+          "category",
+          "categoryLabel",
+          "title",
+          "description",
+          "reasoning",
+          "date",
+          "goType",
+          "gop",
+          "monetaryValue",
+          "userEdit"
+        ],
+        "properties": {
+          "ident": {
+            "type": "integer",
+            "description": "Schlüssel des Action Handles, eindeutig innerhalb der Praxis."
+          },
+          "contentRevision": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Revision des Vorschlags (Coder Queries). Wenn gesetzt, bei Rückmeldungen als `expectedRevision` mitgeben."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "add",
+              "remove",
+              "adjust",
+              "review",
+              "workflow"
+            ],
+            "description": "Vorgeschlagene Handlung. `add` Ziffer übernehmen, `remove` Position streichen, `adjust` Feld oder Faktor ändern, `review` prüfen; `workflow` bei Coder-Query-Handles."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "rejected",
+              "deactivated",
+              "untouched"
+            ],
+            "description": "Interne Statuswerte. `pending` und `untouched` sind offen, `deactivated` ist durch das System zurückgezogen."
+          },
+          "severity": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "info",
+              "warning",
+              "alert",
+              null
+            ]
+          },
+          "category": {
+            "type": "string",
+            "nullable": true,
+            "description": "Kategorie als FindingType-Literal, z. B. `BILLABLE_OMISSION`."
+          },
+          "categoryLabel": {
+            "type": "string",
+            "nullable": true,
+            "description": "Deutsche Anzeigebezeichnung der Kategorie."
+          },
+          "title": {
+            "type": "string",
+            "nullable": true,
+            "description": "Anzeigetext."
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "description": "Anzeigetext."
+          },
+          "reasoning": {
+            "type": "string",
+            "nullable": true,
+            "description": "Begründung, Anzeigetext."
+          },
+          "date": {
+            "type": "string",
+            "format": "date",
+            "nullable": true,
+            "description": "Fachdatum (Behandlungs- bzw. Dokumentationstag)."
+          },
+          "goType": {
+            "type": "string",
+            "nullable": true,
+            "description": "Abrechnungssystem, `EBM` oder `GOAE`."
+          },
+          "gop": {
+            "type": "string",
+            "nullable": true,
+            "description": "Ziffer, auf die sich der Vorschlag bezieht. `null` bei fallbezogenen Hinweisen."
+          },
+          "monetaryValue": {
+            "type": "number",
+            "nullable": true,
+            "description": "Betrag in EUR, der mit dem Vorschlag verbunden ist."
+          },
+          "userEdit": {
+            "type": "object",
+            "nullable": true,
+            "description": "Letzte Rückmeldung; `null`, solange keine erfolgt ist.",
+            "required": [
+              "status",
+              "comment",
+              "dateCreated"
+            ],
+            "properties": {
+              "status": {
+                "type": "string",
+                "nullable": true,
+                "enum": [
+                  "pending",
+                  "approved",
+                  "rejected",
+                  "deactivated",
+                  "untouched",
+                  null
+                ]
+              },
+              "comment": {
+                "type": "string",
+                "nullable": true
+              },
+              "dateCreated": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": true
+              }
+            }
+          }
+        }
+      },
+      "FacetsResponse": {
+        "type": "object",
+        "required": [
+          "key",
+          "data"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "success"
+          },
+          "data": {
+            "$ref": "#/components/schemas/Facets"
+          }
+        }
+      },
+      "Facets": {
+        "type": "object",
+        "required": [
+          "goTypes",
+          "categories",
+          "gops"
+        ],
+        "properties": {
+          "goTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "value",
+                "label"
+              ],
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "description": "FindingType-Literal für den Filter `category`"
+                },
+                "label": {
+                  "type": "string",
+                  "nullable": true,
+                  "description": "Deutsche Anzeigebezeichnung"
+                }
+              }
+            }
+          },
+          "gops": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "FeedbackRequest": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "approved",
+              "rejected",
+              "pending"
+            ]
+          },
+          "comment": {
+            "type": "string",
+            "nullable": true,
+            "description": "Freitext, optional."
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Pflicht, wenn das Handle eine `contentRevision` trägt; dann genau dieser Wert."
+          }
+        }
+      },
+      "FeedbackResponse": {
+        "type": "object",
+        "required": [
+          "key",
+          "data"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "success"
+          },
+          "data": {
+            "$ref": "#/components/schemas/FeedbackResult"
+          }
+        }
+      },
+      "FeedbackResult": {
+        "type": "object",
+        "required": [
+          "ident",
+          "status",
+          "contentRevision"
+        ],
+        "properties": {
+          "ident": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "approved",
+              "rejected",
+              "pending"
+            ]
+          },
+          "contentRevision": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Neue Revision nach der Rückmeldung; `null`, wenn das Handle keine Revision führt."
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": [
+          "key",
+          "msg"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Fester Fehlerschlüssel, siehe Tabelle in der Einleitung",
+            "example": "GENERAL_ERROR"
+          },
+          "reqId": {
+            "type": "string",
+            "description": "Request-Id zur Nachverfolgung; steht auch im Header `X-Request-Id`",
+            "example": "4a900ef0-dfbe-11ef-add6-bf069a8357f6"
+          },
+          "msg": {
+            "type": "string",
+            "example": "Ein Fehler ist aufgetreten"
+          }
+        }
+      }
+    }
+  }
+}
